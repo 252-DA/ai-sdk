@@ -1,0 +1,22 @@
+name: Materialize AI Runtime SDK
+description: Copy this pinned SDK revision into a consumer workflow workspace
+
+inputs:
+  path:
+    description: Destination path relative to the workflow workspace
+    required: false
+    default: ai-sdk
+
+runs:
+  using: composite
+  steps:
+    - name: Copy SDK source
+      shell: bash
+      env:
+        AI_SDK_DESTINATION: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        repository_root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        mkdir -p "$AI_SDK_DESTINATION"
+        cp -a "$repository_root/." "$AI_SDK_DESTINATION/"
+        test -f "$AI_SDK_DESTINATION/pyproject.toml"
