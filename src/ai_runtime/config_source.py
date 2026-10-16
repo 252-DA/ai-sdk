@@ -1,16 +1,20 @@
 """Where the "which profile does this task use" answer comes from.
 
-Everything behind ``ModelConfigSource`` is swappable: env today, a Postgres
-table later, a dict in tests. Call sites ask for a task and never learn which
-source answered, so moving the binding into a database is one new class and no
-change to any use case.
+Everything behind ``ModelConfigSource`` is swappable: env, a table an admin
+edits at runtime (``OverrideConfigSource`` layered over env), a dict in tests.
+Call sites ask for a task and never learn which source answered.
 """
 
+import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import Callable, Collection, Mapping, Protocol
 
 from ai_runtime.catalog import TASK_DEFAULTS, DEFAULT_PROFILE
+
+logger = logging.getLogger(__name__)
 
 # One spelling, platform-wide: LLM_PROFILE__<TASK>, e.g.
 #   LLM_PROFILE__QUIZ_GENERATION=deepseek-chat
@@ -86,6 +90,80 @@ class EnvConfigSource:
         return TaskBinding(task=task, profile=profile, source=source)
 
 
+class OverrideConfigSource:
+    """Bindings that can change while the process runs, layered over ``base``.
+
+    ``fetch`` returns ``{task: profile}`` from a store an admin edits (the
+    ``llm_model_bindings`` table); a task it does not name falls through to
+    ``base``. The answer is cached for ``ttl_seconds``, so a change takes
+    effect within one TTL and a busy worker reads the store once per TTL, not
+    once per job.
+
+    The store going down must not take the models down with it: a failed
+    fetch keeps the last answer that worked (none, on a cold start) and waits
+    one TTL before trying again. A profile the catalog does not know is
+    dropped with a warning instead of failing every job that uses the task.
+    """
+
+    def __init__(
+        self,
+        fetch: Callable[[], Mapping[str, str]],
+        base: ModelConfigSource,
+        *,
+        ttl_seconds: float = 30.0,
+        known_profiles: Collection[str] | None = None,
+        source_label: str = "db",
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._fetch = fetch
+        self._base = base
+        self._ttl = ttl_seconds
+        self._known = frozenset(known_profiles) if known_profiles is not None else None
+        self._label = source_label
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._overrides: dict[str, str] = {}
+        self._loaded_at: float | None = None
+
+    def binding_for(self, task: str) -> TaskBinding:
+        profile = self._current().get(task)
+        if profile:
+            return TaskBinding(task=task, profile=profile, source=self._label)
+        return self._base.binding_for(task)
+
+    def _current(self) -> dict[str, str]:
+        with self._lock:
+            now = self._clock()
+            if self._loaded_at is not None and now - self._loaded_at < self._ttl:
+                return self._overrides
+            self._loaded_at = now
+            try:
+                raw = dict(self._fetch())
+            except Exception as exc:  # noqa: BLE001 -- any store error means "keep going"
+                logger.warning(
+                    "model binding fetch failed; keeping %d previous binding(s): %s",
+                    len(self._overrides),
+                    exc,
+                )
+                return self._overrides
+            self._overrides = self._valid(raw)
+            return self._overrides
+
+    def _valid(self, raw: Mapping[str, str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for task, profile in raw.items():
+            name = _non_empty(profile)
+            if name is None:
+                continue
+            if self._known is not None and name not in self._known:
+                logger.warning(
+                    "ignoring model binding %s=%r: profile is not in the catalog", task, name
+                )
+                continue
+            out[task] = name
+        return out
+
+
 def _non_empty(value: str | None) -> str | None:
     """Compose passes "" for unset .env variables, which is not a choice."""
     if value is None:
@@ -99,6 +177,7 @@ __all__ = [
     "TASK_ENV_PREFIX",
     "EnvConfigSource",
     "ModelConfigSource",
+    "OverrideConfigSource",
     "StaticConfigSource",
     "TaskBinding",
 ]

@@ -1,7 +1,7 @@
 import pytest
 
 from ai_runtime.catalog import PROFILES, TASK_DEFAULTS, ModelProfile
-from ai_runtime.config_source import EnvConfigSource, StaticConfigSource
+from ai_runtime.config_source import EnvConfigSource, OverrideConfigSource, StaticConfigSource
 from ai_runtime.errors import ModelConfigurationError
 from ai_runtime.providers.deepseek import DeepSeekModelClient
 from ai_runtime.registry import ModelRegistry
@@ -45,6 +45,128 @@ class TestEnvConfigSource:
         binding = EnvConfigSource(env={}).binding_for("quiz_verification")
 
         assert binding.profile == TASK_DEFAULTS["quiz_verification"]
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _Store:
+    """Bảng binding giả: đổi ``rows`` hoặc ``error`` giữa các lần đọc."""
+
+    def __init__(self, rows: dict[str, str] | None = None) -> None:
+        self.rows = dict(rows or {})
+        self.error: Exception | None = None
+        self.reads = 0
+
+    def __call__(self) -> dict[str, str]:
+        self.reads += 1
+        if self.error is not None:
+            raise self.error
+        return dict(self.rows)
+
+
+def _override(store: _Store, clock: _Clock, env: dict[str, str] | None = None, **kwargs):
+    return OverrideConfigSource(
+        store, EnvConfigSource(env=env or {}), ttl_seconds=30, clock=clock,
+        known_profiles=PROFILES, **kwargs,
+    )
+
+
+class TestOverrideConfigSource:
+    def test_store_binding_beats_the_env_variable(self):
+        store = _Store({"quiz_generation": "gemini-pro"})
+        source = _override(store, _Clock(), env={"LLM_PROFILE__QUIZ_GENERATION": "deepseek-chat"})
+        binding = source.binding_for("quiz_generation")
+
+        assert binding.profile == "gemini-pro"
+        assert binding.source == "db"
+
+    def test_task_missing_from_the_store_falls_through_to_env(self):
+        source = _override(_Store({}), _Clock(), env={"LLM_PROFILE__ENRICHMENT": "gemini-pro"})
+        binding = source.binding_for("enrichment")
+
+        assert binding.profile == "gemini-pro"
+        assert binding.source == "env:LLM_PROFILE__ENRICHMENT"
+
+    def test_reads_the_store_once_per_ttl(self):
+        store, clock = _Store({"enrichment": "gemini-pro"}), _Clock()
+        source = _override(store, clock)
+        for _ in range(5):
+            source.binding_for("enrichment")
+        assert store.reads == 1
+
+        clock.now = 31
+        source.binding_for("enrichment")
+        assert store.reads == 2
+
+    def test_a_change_takes_effect_after_the_ttl_without_a_restart(self):
+        store, clock = _Store({"enrichment": "gemini-flash"}), _Clock()
+        source = _override(store, clock)
+        assert source.binding_for("enrichment").profile == "gemini-flash"
+
+        store.rows["enrichment"] = "gemini-pro"
+        clock.now = 10
+        assert source.binding_for("enrichment").profile == "gemini-flash"
+        clock.now = 31
+        assert source.binding_for("enrichment").profile == "gemini-pro"
+
+    def test_removing_the_row_returns_the_task_to_env(self):
+        store, clock = _Store({"enrichment": "gemini-pro"}), _Clock()
+        source = _override(store, clock)
+        source.binding_for("enrichment")
+
+        del store.rows["enrichment"]
+        clock.now = 31
+        assert source.binding_for("enrichment").source == "task-default"
+
+    def test_store_failure_keeps_the_last_good_answer(self):
+        store, clock = _Store({"enrichment": "gemini-pro"}), _Clock()
+        source = _override(store, clock)
+        source.binding_for("enrichment")
+
+        store.error = RuntimeError("db down")
+        clock.now = 31
+        assert source.binding_for("enrichment").profile == "gemini-pro"
+
+    def test_store_failure_on_cold_start_falls_back_to_env(self):
+        store = _Store()
+        store.error = RuntimeError("relation does not exist")
+        source = _override(store, _Clock())
+
+        assert source.binding_for("quiz_verification").profile == TASK_DEFAULTS["quiz_verification"]
+
+    def test_failed_read_waits_a_ttl_before_retrying(self):
+        store, clock = _Store(), _Clock()
+        store.error = RuntimeError("db down")
+        source = _override(store, clock)
+        source.binding_for("enrichment")
+        source.binding_for("enrichment")
+
+        assert store.reads == 1
+
+    def test_unknown_profile_in_the_store_is_ignored(self):
+        source = _override(_Store({"enrichment": "gpt-99"}), _Clock())
+        binding = source.binding_for("enrichment")
+
+        assert binding.profile == TASK_DEFAULTS["enrichment"]
+
+    def test_empty_profile_in_the_store_is_not_a_choice(self):
+        source = _override(_Store({"enrichment": "  "}), _Clock())
+
+        assert source.binding_for("enrichment").source == "task-default"
+
+    def test_registry_resolves_through_the_override(self):
+        env = {"GEMINI_API_KEY": "gk"}
+        source = _override(_Store({"quiz_generation": "gemini-pro"}), _Clock(), env=env)
+        resolved = ModelRegistry(source=source, env=env).resolve("quiz_generation")
+
+        assert resolved.profile.name == "gemini-pro"
+        assert resolved.binding.source == "db"
 
 
 class TestModelRegistry:

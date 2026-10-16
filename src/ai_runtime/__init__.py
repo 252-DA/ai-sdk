@@ -4,6 +4,7 @@ from ai_runtime.catalog import PROFILES, TASK_DEFAULTS, ModelProfile
 from ai_runtime.config_source import (
     EnvConfigSource,
     ModelConfigSource,
+    OverrideConfigSource,
     StaticConfigSource,
     TaskBinding,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "ModelConfigSource",
     "ModelProfile",
     "ModelRegistry",
+    "OverrideConfigSource",
     "ResolvedModel",
     "StaticConfigSource",
     "StructuredGenerationResult",
