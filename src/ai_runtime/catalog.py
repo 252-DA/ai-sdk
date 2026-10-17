@@ -71,6 +71,12 @@ class ModelProfile:
 # llm.cost.unpriced once per profile, which is the honest state.
 
 PROFILES: dict[str, ModelProfile] = {
+    "gemini-flash-lite": ModelProfile(
+        name="gemini-flash-lite",
+        provider="gemini",
+        model="gemini-3.1-flash-lite",
+        key_env=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    ),
     "gemini-flash": ModelProfile(
         name="gemini-flash",
         provider="gemini",
@@ -101,18 +107,18 @@ PROFILES: dict[str, ModelProfile] = {
 
 # Which profile a task uses when nothing overrides it.
 TASK_DEFAULTS: dict[str, str] = {
-    # Mirrors what the deployment already runs: quiz generation on DeepSeek
-    # (QUIZ_LLM_* in compose), everything else on Gemini.
+    # DeepSeek writes questions; Gemini Flash-Lite handles verification,
+    # enrichment and tutoring by default.
     QUIZ_GENERATION: "deepseek-chat",
     # The judge must not be the model under judgement -- a model that wrote a
     # bad question tends to accept it. See docs/quiz-generation-redesign.md.
-    QUIZ_VERIFICATION: "gemini-flash",
+    QUIZ_VERIFICATION: "gemini-flash-lite",
     QUIZ_REGENERATION: "deepseek-chat",
-    ENRICHMENT: "gemini-flash",
-    TUTOR: "gemini-flash",
+    ENRICHMENT: "gemini-flash-lite",
+    TUTOR: "gemini-flash-lite",
 }
 
-DEFAULT_PROFILE = "gemini-flash"
+DEFAULT_PROFILE = "gemini-flash-lite"
 
 
 def known_profile_names(profiles: dict[str, ModelProfile] | None = None) -> str:

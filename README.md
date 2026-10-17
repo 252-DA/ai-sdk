@@ -17,6 +17,11 @@ the calling application's use cases.
 uv add --editable "../ai-sdk[gemini]"
 ```
 
+The default Gemini profile is `gemini-flash-lite`, which calls
+`gemini-3.1-flash-lite` for enrichment, quiz verification and tutoring.
+Select a profile with `LLM_PROFILE__<TASK>` or `LLM_PROFILE`; `gemini-flash`
+remains available for Gemini 3 Flash Preview.
+
 ## Generate structured output
 
 ```python
@@ -33,7 +38,7 @@ runtime = AIRuntime(
     build_model_client(
         ModelConfig(
             provider="gemini",
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-flash-lite",
             api_key="...",
         )
     )
