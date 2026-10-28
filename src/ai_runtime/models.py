@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -18,6 +19,18 @@ class GenerationResult:
     usage: TokenUsage = TokenUsage()
 
 
+@dataclass(frozen=True)
+class TextDelta:
+    """Một mẩu chữ mới khi sinh theo luồng."""
+
+    text: str
+
+
+# Luồng sinh: các TextDelta theo thứ tự, phần tử cuối cùng luôn là GenerationResult
+# (toàn văn đã ghép và số token).
+StreamItem = TextDelta | GenerationResult
+
+
 class ModelClient(Protocol):
     @property
     def model_id(self) -> str:
@@ -28,6 +41,17 @@ class ModelClient(Protocol):
         prompt: str,
         system: str | None = None,
     ) -> GenerationResult:
+        ...
+
+
+class StreamingModelClient(ModelClient, Protocol):
+    """Provider sinh được theo luồng. Provider không có `stream` vẫn dùng được qua AIRuntime.stream_text."""
+
+    def stream(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> Iterator[StreamItem]:
         ...
 
 

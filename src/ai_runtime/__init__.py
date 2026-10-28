@@ -12,6 +12,9 @@ from ai_runtime.models import (
     GenerationResult,
     ModelClient,
     ModelConfig,
+    StreamingModelClient,
+    StreamItem,
+    TextDelta,
     TokenUsage,
     build_model_client,
 )
@@ -32,8 +35,11 @@ __all__ = [
     "OverrideConfigSource",
     "ResolvedModel",
     "StaticConfigSource",
+    "StreamItem",
+    "StreamingModelClient",
     "StructuredGenerationResult",
     "TaskBinding",
+    "TextDelta",
     "TokenUsage",
     "build_model_client",
 ]

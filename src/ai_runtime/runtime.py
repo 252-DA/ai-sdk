@@ -1,12 +1,13 @@
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from ai_runtime.errors import StructuredOutputError
-from ai_runtime.models import GenerationResult, ModelClient
+from ai_runtime.models import GenerationResult, ModelClient, StreamItem, TextDelta
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -34,6 +35,25 @@ class AIRuntime:
         system: str | None = None,
     ) -> GenerationResult:
         return self._model.generate(prompt=prompt, system=system)
+
+    def stream_text(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> Iterator[StreamItem]:
+        """
+        Sinh theo luồng: các TextDelta rồi đúng một GenerationResult ở cuối.
+
+        Provider chưa hỗ trợ luồng thì sinh một lần và trả toàn văn thành một mẩu duy nhất,
+        để nơi gọi chỉ cần một cách đọc.
+        """
+        stream = getattr(self._model, "stream", None)
+        if stream is None:
+            result = self.generate_text(prompt=prompt, system=system)
+            yield TextDelta(result.text)
+            yield result
+            return
+        yield from stream(prompt=prompt, system=system)
 
     def generate_structured(
         self,

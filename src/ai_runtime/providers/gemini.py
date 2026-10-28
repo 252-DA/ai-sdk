@@ -1,7 +1,8 @@
+from collections.abc import Iterator
 from functools import cached_property
 
 from ai_runtime.errors import ModelConfigurationError, ModelGenerationError
-from ai_runtime.models import GenerationResult, ModelConfig, TokenUsage
+from ai_runtime.models import GenerationResult, ModelConfig, StreamItem, TextDelta, TokenUsage
 
 
 class GeminiModelClient:
@@ -35,20 +36,31 @@ class GeminiModelClient:
             ),
         )
 
+    @staticmethod
+    def _usage(usage) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=getattr(usage, "prompt_token_count", None),
+            output_tokens=getattr(usage, "candidates_token_count", None),
+            total_tokens=getattr(usage, "total_token_count", None),
+        )
+
+    def _config_for(self, system: str | None):
+        _, types = self._sdk
+        return types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=self._config.temperature,
+        )
+
     def generate(
         self,
         prompt: str,
         system: str | None = None,
     ) -> GenerationResult:
         try:
-            _, types = self._sdk
             response = self._client.models.generate_content(
                 model=self._config.model,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    temperature=self._config.temperature,
-                ),
+                config=self._config_for(system),
             )
         except Exception as exc:
             raise ModelGenerationError(
@@ -58,14 +70,50 @@ class GeminiModelClient:
         text = getattr(response, "text", None)
         if not text or not text.strip():
             raise ModelGenerationError("Gemini returned an empty response")
-        usage = getattr(response, "usage_metadata", None)
         return GenerationResult(
             text=text.strip(),
             model=self._config.model,
-            usage=TokenUsage(
-                input_tokens=getattr(usage, "prompt_token_count", None),
-                output_tokens=getattr(usage, "candidates_token_count", None),
-                total_tokens=getattr(usage, "total_token_count", None),
-            ),
+            usage=self._usage(getattr(response, "usage_metadata", None)),
         )
+
+    def stream(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> Iterator[StreamItem]:
+        try:
+            chunks = self._client.models.generate_content_stream(
+                model=self._config.model,
+                contents=prompt,
+                config=self._config_for(system),
+            )
+        except Exception as exc:
+            raise ModelGenerationError(
+                f"Gemini generation failed for {self._config.model}"
+            ) from exc
+
+        parts: list[str] = []
+        usage = None
+        try:
+            for chunk in chunks:
+                # Số token cộng dồn: gói sau ghi đè gói trước.
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    usage = chunk.usage_metadata
+                piece = getattr(chunk, "text", None)
+                if piece:
+                    parts.append(piece)
+                    yield TextDelta(piece)
+        except Exception as exc:
+            raise ModelGenerationError(
+                f"Gemini streaming failed for {self._config.model}"
+            ) from exc
+        finally:
+            close = getattr(chunks, "close", None)
+            if close is not None:
+                close()
+
+        text = "".join(parts).strip()
+        if not text:
+            raise ModelGenerationError("Gemini returned an empty response")
+        yield GenerationResult(text=text, model=self._config.model, usage=self._usage(usage))
 
